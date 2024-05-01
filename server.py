@@ -23,34 +23,106 @@ cloudinary.config(
 def count_bounding_boxes(detections):
     return sum(len(pred) for pred in detections)
 
+
 def track_bounding_boxes(detections):
     return count_bounding_boxes(detections)
+
 
 @app.route('/')
 def index():
     return 'Welcome to the Number Plate Detection API'
+
 
 @app.route('/webcam', methods=['POST'])
 def process_webcam():
     # Capture video from webcam
     cap = cv2.VideoCapture(0)
 
+    # Set the processing duration to 30 seconds
+    processing_duration = 5  # in seconds
+
     # Get original video properties
+    # frame_rate = cap.get(cv2.CAP_PROP_FPS)
+    frame_rate = 12
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
 
-    # Set the processing duration to 30 seconds
-    processing_duration = 30  # in seconds
-    start_time = time.time()
+    # Create a list to store processed frames
+    processed_frames = []
+
+    # Create a folder to save processed frames
+    frame_folder = os.path.join(os.getcwd(), "Webcam_smart_parking_system", "frames")
+    os.makedirs(frame_folder, exist_ok=True)
+
+    # Define font and text position for annotations
+    font = ImageFont.truetype("arial.ttf", 20)
+    text_position = (10, 20)
+
+    # Process video frames and perform detection in real-time
+    frame_count = 0
+    frames_to_process = frame_rate * processing_duration
+    while True:
+        
+        if frame_count >= frames_to_process:
+            break 
+        print(frame_count)
+        ret, frame = cap.read()
     
-    # Process video frames
-    processed_video_url, message = process_video(cap, processing_duration, start_time, frame_width, frame_height, frame_rate)
+        if not ret:
+            break
+
+        # Perform detection on the frame
+        image = Image.fromarray(frame)
+        detections_numberplate = yolo_numberplate.predict(image, save=False)
+
+        # Print the number of bounding boxes detected for each object
+        num_boxes_numberplate = count_bounding_boxes(detections_numberplate)
+        print("Frame {}: Number plate bounding boxes: {}".format(frame_count, num_boxes_numberplate))
+
+        # Track bounding boxes
+        num_tracked_boxes_numberplate = track_bounding_boxes(detections_numberplate)
+        print("Frame {}: Tracked number plate boxes: {}".format(frame_count, num_tracked_boxes_numberplate))
+
+        # Plot bounding boxes on the frame
+        res_plotted = detections_numberplate[0].plot()  # Assuming there's only one detection
+        frame_with_boxes = np.array(res_plotted)
+
+        # Add text annotations to the frame
+        image_with_text = Image.fromarray(frame_with_boxes)
+        draw = ImageDraw.Draw(image_with_text)
+        draw.text(text_position, f"Bboxes: {num_boxes_numberplate}, Tracked NumberPlate: {num_tracked_boxes_numberplate}", font=font, fill=(255, 255, 255))
+
+        # Append processed frame to list
+        processed_frames.append(np.array(image_with_text))
+
+        # Save processed frame to the frames folder
+        frame_path = os.path.join(frame_folder, f"frame_{frame_count}.jpg")
+        cv2.imwrite(frame_path, cv2.cvtColor(np.array(image_with_text), cv2.COLOR_RGB2BGR))
+        frame_count += 1
 
     # Release the VideoCapture object
     cap.release()
 
-    return jsonify({'processed_video_url': processed_video_url, 'message': message}), 200
+    # Save the processed frames as a video file
+    output_video_path = os.path.join(frame_folder, "processed_video.mp4")
+    out = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'mp4v'), frame_rate, (frame_width, frame_height))
+    for frame in processed_frames:
+        out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    out.release()
+
+    # Upload video to Cloudinary
+    cloudinary_response = upload(output_video_path, resource_type="video")
+
+    # Get URL & ID for the processed video from Cloudinary response
+    processed_video_url = cloudinary_response['secure_url']
+    processed_public_id = cloudinary_response['public_id']
+
+    return jsonify({
+        'processed_video_url': processed_video_url,
+        'processed_public_id': processed_public_id,
+        'message': 'Processed video and frames saved successfully'
+    }), 200
+
 
 def process_video(video_source, processing_duration=None, start_time=None, input_width=None, input_height=None, frame_rate=None):
     if isinstance(video_source, str):
@@ -179,7 +251,6 @@ def process_video(video_source, processing_duration=None, start_time=None, input
     return processed_video_url, 'Video processed successfully'
 
 
-
 @app.route('/upload_plate', methods=['POST'])
 def upload_plate():
     if 'file' not in request.files:
@@ -281,6 +352,7 @@ def upload_plate():
         }), 200
     else:
         return jsonify({'error': 'Invalid file format. Please upload a .mp4 file'}), 400
+
 
 @app.route('/upload_parking', methods=['POST'])
 def upload_parking():
@@ -384,6 +456,7 @@ def upload_parking():
     else:
         return jsonify({'error': 'Invalid file format. Please upload a .mp4 file'}), 400
 
+
 # Load YOLO model for number plate detection
 print("Loading number plate detection model...")
 yolo_numberplate = YOLO('./number_plate_1.pt')
@@ -393,6 +466,7 @@ print("Number plate detection model loaded successfully.")
 print("Loading parking slot detection model...")
 yolo_parkingslot = YOLO('./parkingslot.pt')
 print("Parking slot detection model loaded successfully.")
+
 
 if __name__ == '__main__':
     app.run(debug=False)
